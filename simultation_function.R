@@ -11,6 +11,7 @@ library(data.table)
 library(patchwork)
 library(ggh4x)
 library(kableExtra)
+library(caret)
 
 # Selection algorithm -- Lasso, fixed lambda
 Selection = function(y,X, p){
@@ -59,7 +60,7 @@ confint.truesigma <- function(object, parm, level = 0.95, truesigma, df=NULL, es
 
 
 # Estimator of the standard deviation
-sigma_hat = function(y, X){
+sigma_hat = function(y, X, method){
   
   if(is.null(dim(X))){
     n = length(X)
@@ -79,29 +80,113 @@ sigma_hat = function(y, X){
     
   }else{ # high dimensional
     
-    est = estimateSigma2(X, y, intercept=FALSE)
+    est = estimateSigma2(X, y,method, intercept=FALSE)
     return(list(sigmahat=est$sigmahat, df=est$df))
   }
 }
 
 ## estimate Sigma in high dimensional case
-estimateSigma2 <- function(x, y, intercept=FALSE, standardize=TRUE){
- 
-  cvfit=cv.glmnet(x,y,intercept=intercept,standardize=standardize)
-  lamhat=cvfit$lambda.min
-  fit=glmnet(x,y,standardize=standardize, intercept=intercept)
-  yhat=predict(fit,x,s=lamhat)
-  nz=sum(predict(fit,s=lamhat, type="coef")[-1, ] !=0)
+estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
+  if(method == 'P'){
+    
+    cvfit = cv.glmnet(x,y,intercept=intercept,standardize=standardize)
+    lamhat = cvfit$lambda.min
+    fit = glmnet(x,y,standardize=standardize, intercept=intercept)
+    yhat = predict(fit,x,s=lamhat)
+    nz = sum(predict(fit,s=lamhat, type="coef")[-1, ] !=0)
+    
+    df = max(length(y)- nz, 1)  ## prevent from dividing by 0
+    sigma = sqrt(sum((y-yhat)^2)/(df))
+    return(list(sigmahat=sigma, df=df))
+    
+  }else if(method == 'RCV'){
+    
+    n = dim(x)[1]
+    index = sample(1:n,n/2)
+    
+    ## divide into two subsets
+    x1 = x[index,]
+    y1 = y[index]
+    x2 = x[-index, ]
+    y2 = y[-index]
+    
+    # apply LASSO to each subset
+    lasso1 = cv.glmnet(x1, y1, intercept=intercept,standardize=standardize)
+    lasso2 = cv.glmnet(x2, y2, intercept=intercept,standardize=standardize)
+    
+    # select variables (non-zero coefficients)
+    lamhat1 = lasso1$lambda.min
+    lamhat2 = lasso2$lambda.min
+    
+    M1 = which(coef(lasso1, s = lamhat1)[-1,] != 0)
+    M2 = which(coef(lasso2, s = lamhat2)[-1,] != 0)
+    
+    # estimate variances
+    n_half = n / 2
+    
+    P_M1 = x2[, M1] %*% solve(t(x2[, M1]) %*% x2[, M1]) %*% t(x2[, M1])
+    sigma2_1 = t(y2) %*% (diag(n_half) - P_M1) %*% y2 / (n_half - length(M1))
+    
+    P_M2 = x1[, M2] %*% solve(t(x1[, M2]) %*% x1[, M2]) %*% t(x1[, M2])
+    sigma2_2 = t(y1) %*% (diag(n_half) - P_M2) %*% y1 / (n_half - length(M2))
+    
+    # calculate weighted variance estimator
+    weighted_var = (sigma2_1 * (n_half - length(M1)) + sigma2_2 * (n_half - length(M2))) / 
+      (n - length(M1) - length(M2))
+    
+    sigma = sqrt(weighted_var[1,1])
+    df = n - length(M1) - length(M2) #####????????
+    return(list(sigmahat=sigma, df=df))
+    
+  }else if(method == 'CV'){
+    
+    K = 5
+    n = dim(x)[1]
+    folds = createFolds(y, k = K, list = TRUE, returnTrain = TRUE)
+    
+    sse = c()
+    
+    for(k in 1:K){
+      index = folds[[k]]
+      
+      ## divide into two sets
+      x_train = x[index,]
+      y_train = y[index]
+      x_test = x[-index,]
+      y_test = y[-index]
+      
+      ## fit lasso on the training set
+      lasso_model = cv.glmnet(x_train,y_train,intercept=intercept,standardize=standardize)
+      lamhat = lasso_model$lambda.min
+      
+      ## predict on the test set
+      yhat = predict(lasso_model,x_test,s=lamhat)
+      
+      ## sum of squared error
+      sse = c(sse, sum((y_test-yhat)^2))
+      
+    }
+    sigma = sqrt(sum(sse)/n)
+    
+    ## df -- fit Lasso on the entire data
+    
+    lasso_all = cv.glmnet(x,y,intercept=intercept,standardize=standardize)
+    lamhat = lasso_all$lambda.min
+    beta_hat = coef(lasso_all, s=lamhat)[-1,]
+    s_L = sum(beta_hat != 0)
+    
+    df = n - s_L ####??????
+    
+    return(list(sigmahat=sigma, df=df))
+    
+  }
   
-  df = max(length(y)- nz, 1)  ## prevent from dividing by 0
-  sigma=sqrt(sum((y-yhat)^2)/(df))
-  return(list(sigmahat=sigma, df=df))
 }
 
 
 ##simulation function #######################
 
-COV2 = function(n,p,rho,B,f,level,sigma,estimateVar = FALSE){
+COV2 = function(n,p,rho,B,f,level,sigma,method,estimateVar = FALSE){
   
   gamma = sqrt(1/f - 1)
   k = sqrt((1 + gamma^(-2))) ## used when constructing the confidence interval
@@ -117,7 +202,9 @@ COV2 = function(n,p,rho,B,f,level,sigma,estimateVar = FALSE){
   beta0_R = c() ## to store the absolute of the true value of the selected coefficients
   COV_R_HD = c() ## to store the coverage probability
   LENGTH_R = c()  ## to store the length of the confidence interval
-  
+  if(estimateVar){
+    estimated_sigma = c() ## to store the estimator of sigma
+  }
   
   pb = txtProgressBar(min = 0, max = 100, style = 3, width = 50, char = "=") 
   
@@ -132,8 +219,10 @@ COV2 = function(n,p,rho,B,f,level,sigma,estimateVar = FALSE){
     y = X%*%beta0 + rnorm(dim(X)[1], sd = sigma)
     
     ## Estimated sigma
-    est_sig = sigma_hat(y, X)
-    
+    if(estimateVar){
+      est_sig = sigma_hat(y, X, method)
+      estimated_sigma = c(estimated_sigma,est_sig$sigmahat)
+    }
     #################### U and V ####################
     
     
@@ -184,14 +273,17 @@ COV2 = function(n,p,rho,B,f,level,sigma,estimateVar = FALSE){
   
   close(pb)
   
-  return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R))
-  
+  if(estimateVar){
+    return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, estimated_sigma = estimated_sigma ))
+  }else{
+    return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R))
+  }
   
 }
 
 
 # running function ###########################
-run_result_cov2 = function(n, p, rhos, B, fs, level, sigma, estimateVar = FALSE, save=FALSE, load=FALSE){
+run_result_cov2 = function(n, p, rhos, B, fs, level, sigma, method, estimateVar = FALSE, save=FALSE, load=FALSE){
   
   count = 1
   
@@ -207,7 +299,7 @@ run_result_cov2 = function(n, p, rhos, B, fs, level, sigma, estimateVar = FALSE,
       
       if(!save & !load){
         assign(result_obj, COV2(n, p = p, rho = j, B, f = k, 
-                                level = level, sigma=sigma,
+                                level = level, sigma=sigma,method=method,
                                 estimateVar = estimateVar), envir = parent.frame())
       }
       
