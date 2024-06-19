@@ -66,7 +66,7 @@ sigma_hat = function(y, X, method){
     p = dim(X)[2]
   }
   
-  if (p < n/4){# low dimensional
+  if (p < n){# low dimensional
     
     X_full = X
     beta_hat_full = solve(t(X_full)%*%X_full)%*%t(X_full)%*%y
