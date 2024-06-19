@@ -29,7 +29,7 @@ Selection = function(y,X, p){
 
 
 # Normal Confidence interval
-confint.truesigma <- function(object, parm, level = 0.95, truesigma, df=NULL, estimate=FALSE)
+confint.truesigma <- function(object, parm, level = 0.95, truesigma)
   ## estimate=False : truesigma = the true value of sigma
   ## estimate=True : truesigma = the estimator of sigma
 {
@@ -43,11 +43,7 @@ confint.truesigma <- function(object, parm, level = 0.95, truesigma, df=NULL, es
   a = c(a, 1 - a)
   pct = format(a, 3)
   
-  if(estimate){
-    fac = qt(a, df=df) ## when sigma is unknown
-  }else{
-    fac = qnorm(a) ## when sigma is known
-  }
+  fac = qnorm(a) # normal quantile
   
   ci = array(NA, dim = c(length(parm), 2L), dimnames = list(parm, pct))
   invXtX = solve(crossprod(model.matrix(object)), tol = 1e-50)
@@ -76,12 +72,12 @@ sigma_hat = function(y, X, method){
     beta_hat_full = solve(t(X_full)%*%X_full)%*%t(X_full)%*%y
     df = n - p
     sigmahat = sqrt(sum((y - X_full%*%beta_hat_full)^2)/df)
-    return(list(sigmahat=sigmahat, df=df))
+    return(sigmahat)
     
   }else{ # high dimensional
     
-    est = estimateSigma2(X, y,method, intercept=FALSE)
-    return(list(sigmahat=est$sigmahat, df=est$df))
+    sigmahat = estimateSigma2(X, y,method, intercept=FALSE)
+    return(sigmahat)
   }
 }
 
@@ -94,10 +90,10 @@ estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
     fit = glmnet(x,y,standardize=standardize, intercept=intercept)
     yhat = predict(fit,x,s=lamhat)
     nz = sum(predict(fit,s=lamhat, type="coef")[-1, ] !=0)
-    
-    df = max(length(y)- nz, 1)  ## prevent from dividing by 0
+  
+    df = length(y)- nz
     sigma = sqrt(sum((y-yhat)^2)/(df))
-    return(list(sigmahat=sigma, df=df))
+    return(sigma)
     
   }else if(method == 'RCV'){
     
@@ -135,8 +131,8 @@ estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
       (n - length(M1) - length(M2))
     
     sigma = sqrt(weighted_var[1,1])
-    df = n - length(M1) - length(M2) #####????????
-    return(list(sigmahat=sigma, df=df))
+    
+    return(sigma)
     
   }else if(method == 'CV'){
     
@@ -168,16 +164,7 @@ estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
     }
     sigma = sqrt(sum(sse)/n)
     
-    ## df -- fit Lasso on the entire data
-    
-    lasso_all = cv.glmnet(x,y,intercept=intercept,standardize=standardize)
-    lamhat = lasso_all$lambda.min
-    beta_hat = coef(lasso_all, s=lamhat)[-1,]
-    s_L = sum(beta_hat != 0)
-    
-    df = n - s_L ####??????
-    
-    return(list(sigmahat=sigma, df=df))
+    return(sigma)
     
   }
   
@@ -191,7 +178,7 @@ COV2 = function(n,p,rho,B,f,level,sigma,method,estimateVar = FALSE){
   gamma = sqrt(1/f - 1)
   k = sqrt((1 + gamma^(-2))) ## used when constructing the confidence interval
   
-  Sigma_X = matrix(nrow = p, ncol = p) ## Teoplitz covariance for the design matrix
+  Sigma_X = matrix(nrow = p, ncol = p) ## Toeplitz covariance for the design matrix
   for (i in 1:p){
     for (j in 1:p){
       Sigma_X[i, j] = rho^(abs(i - j))
@@ -221,7 +208,7 @@ COV2 = function(n,p,rho,B,f,level,sigma,method,estimateVar = FALSE){
     ## Estimated sigma
     if(estimateVar){
       est_sig = sigma_hat(y, X, method)
-      estimated_sigma = c(estimated_sigma,est_sig$sigmahat)
+      estimated_sigma = c(estimated_sigma,est_sig)
     }
     #################### U and V ####################
     
@@ -229,7 +216,7 @@ COV2 = function(n,p,rho,B,f,level,sigma,method,estimateVar = FALSE){
     ## selection using (U,X)
     
     if(estimateVar){
-      w = rnorm(n, sd = est_sig$sigmahat) ## use the estimator of the sigma
+      w = rnorm(n, sd = est_sig) ## use the estimator of the sigma
     }else{
       w = rnorm(n, sd = sigma) ## use the true sigma
     }
@@ -246,7 +233,7 @@ COV2 = function(n,p,rho,B,f,level,sigma,method,estimateVar = FALSE){
       model = lm(v ~ X_inf - 1)
       
       if(estimateVar){ ## when sigma is unknown, use the estimator of the sigma
-        CIs_R_HD = confint.truesigma(model, level= level, truesigma = k*est_sig$sigmahat, df=est_sig$df, estimate = TRUE)
+        CIs_R_HD = confint.truesigma(model, level= level, truesigma = k*est_sig)
       }else{ ## when sigma is known, use the true value of sigma
         CIs_R_HD = confint.truesigma(model, level = level, truesigma = k*sigma)    
       } 
