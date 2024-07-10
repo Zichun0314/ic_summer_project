@@ -58,7 +58,7 @@ confint.truesigma <- function(object, parm, level = 0.95, truesigma)
 
 
 # Estimator of the standard deviation
-sigma_hat = function(y, X, method){
+sigma_hat = function(y, X, method,true_vars, lamb){
   
   if(is.null(dim(X))){
     n = length(X)
@@ -78,7 +78,7 @@ sigma_hat = function(y, X, method){
     
   }else{ # high dimensional
     
-    sigmahat = estimateSigma2(X, y,method, intercept=FALSE, standardize = TRUE)
+    sigmahat = estimateSigma2(X, y,method, true_vars, lamb, intercept=FALSE, standardize = TRUE)
     if(method == "RCV"){
       return(list(sigmahat = sigmahat$sigma, F1_1 = sigmahat$F1_1, F1_2 = sigmahat$F1_2))
     }else{
@@ -91,15 +91,16 @@ sigma_hat = function(y, X, method){
 # Function to calculate F1 score
 calculate_f1 <- function(selected_vars, true_vars) {
   TP <- length(intersect(selected_vars, true_vars))
-  FP <- length(setdiff(selected_vars, true_vars))
+  #FP <- length(setdiff(selected_vars, true_vars))
   FN <- length(setdiff(true_vars, selected_vars))
   
-  F1_score <- TP/(TP+0.5*(FP+FN))
+  #F1_score <- TP/(TP+0.5*(FP+FN))
+  F1_score = TP/(TP+FN) #actually: RECALL
   return(F1_score)
 }
 
 # Function to tune the lasso to give sensible F1 scores
-LASSO_f1 = function(x, y, true_vars){
+LASSO_f1 = function(x, y, true_vars,lamb){
   
   
   n = dim(x)[1]
@@ -110,12 +111,12 @@ LASSO_f1 = function(x, y, true_vars){
     
   # Universial threshold value lambda
   #lamb = sqrt(2*log(p)/n)
-  #lamb = sqrt(2*log(150)/100)
-  #lamb = 0.4
-  #lamb = 0.25
+  #lamb = 0.3
   #lamb = 0.2
-  lamb = 0.1
+  #lamb = 0.1
   #lamb = 0.05
+  #lamb = 0.01
+  #lamb = 0.001
   
   # get coefficients
   coefs = coef(fit, x = x, y = y, s = lamb, exact = TRUE)[-1]
@@ -133,7 +134,7 @@ LASSO_f1 = function(x, y, true_vars){
 
 
 
-estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
+estimateSigma2 <- function(x, y, method, true_vars,lamb, intercept=FALSE, standardize=TRUE){
   if(method == 'RCV'){
     
     n = dim(x)[1]
@@ -146,11 +147,11 @@ estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
     y2 = y[-index]
     
     # Assuming 'true_vars' is a vector containing the indices of true relevant variables
-    true_vars <- c(1,2,3,4,5,6) 
+    #true_vars <- c(1,2,3,4,5,6) 
     
     # apply LASSO to each subset
-    LASSO_1 = LASSO_f1(x1, y1, true_vars)
-    LASSO_2 = LASSO_f1(x2, y2, true_vars)
+    LASSO_1 = LASSO_f1(x1, y1, true_vars,lamb)
+    LASSO_2 = LASSO_f1(x2, y2, true_vars,lamb)
     
     
     M1 = LASSO_1$M
@@ -179,7 +180,7 @@ estimateSigma2 <- function(x, y, method, intercept=FALSE, standardize=TRUE){
 
 ##simulation function #######################
 
-COV2 = function(n,p,rho,B,f,level,sigma,method=NULL,estimateVar = FALSE){
+COV2 = function(n,p,beta0,rho,B,f,level,sigma,true_vars=NULL,lamb=NULL, method=NULL,estimateVar = FALSE){
   
   gamma = sqrt(1/f - 1)
   k = sqrt((1 + gamma^(-2))) ## used when constructing the confidence interval
@@ -210,7 +211,8 @@ COV2 = function(n,p,rho,B,f,level,sigma,method=NULL,estimateVar = FALSE){
     set.seed(1112*b)
     
     ########################### DATA ###########################
-    beta0 = c(1, -1, 0.5, -0.5, 0.2, -0.2, rep(0, p - 6))    ## First 6 betas are non-zero
+    #beta0 = c(1, -1, 0.5, -0.5, 0.2, -0.2, rep(0, p - 6))    ## First 6 betas are non-zero
+    
     
     X = rmvnorm(n, mean = rep(0, p), sigma = Sigma_X)
     
@@ -220,17 +222,24 @@ COV2 = function(n,p,rho,B,f,level,sigma,method=NULL,estimateVar = FALSE){
     if (estimateVar){
       result <- tryCatch({
         if (method == "RCV"){
-          RCVsigma = sigma_hat(y, X, method)
+          RCVsigma = sigma_hat(y, X, method,true_vars,lamb)
           est_sig = RCVsigma$sigmahat
           F1 = c(F1, RCVsigma$F1_1)
           F2 = c(F2, RCVsigma$F1_2)
           estimated_sigma = c(estimated_sigma, est_sig)
         } else {
-          est_sig = sigma_hat(y, X, method)
+          est_sig = sigma_hat(y, X,method,true_vars,lamb)
           estimated_sigma = c(estimated_sigma, est_sig)
         }
         TRUE  
-      }, error = function(e){
+      }, 
+       
+      warning = function(w){
+        message("Warning at iteration ",b, ":",w$message)
+        FALSE
+      },  
+      
+      error = function(e){
         message("Error at iteration ", b, ": ", e$message)
         FALSE  
       })
@@ -239,29 +248,35 @@ COV2 = function(n,p,rho,B,f,level,sigma,method=NULL,estimateVar = FALSE){
         next  
       }
     }
+   
+    
+   
     #################### U and V ####################
     
     ## selection using (U,X)
-    selection_result <- tryCatch({
+    compute_w <- tryCatch({
       if (estimateVar) {
         w = rnorm(n, sd = est_sig) ## use the estimator of the sigma
       } else {
         w = rnorm(n, sd = sigma) ## use the true sigma
       }
-      
-      u = y + gamma * w
-      S_R = Selection(u, X, p = p)
       TRUE  
-    }, error = function(e){
+    }, 
+    warning = function(w){
+      message("Warning at iteration ",b, ":",w$message)
+      FALSE
+    },
+    error = function(e){
       message("Error at iteration ", b, " during selection: ", e$message)
-      
       FALSE 
     })
     
-    if (!selection_result) {
+    if (!compute_w) {
       next  
     }
     
+    u = y + gamma * w
+    S_R = Selection(u, X, p = p)
     
     
   
@@ -314,12 +329,108 @@ COV2 = function(n,p,rho,B,f,level,sigma,method=NULL,estimateVar = FALSE){
 }
 
 ## EXAMPLE
+n = 100; p = 150; 
+rho = 0.5 ;  f = 1/2; level = 0.95; B=25000; sigma=1
 
-n = 100; p = 150; rho = 0.5 ;  f = 1/2; level = 0.95; B=10000; sigma=1
 
-## estimated simga -- RCV (failed)
+##S6
+beta0 = c(1, -1, 0.5, -0.5, 0.2, -0.2, rep(0, p - 6))
+true_vars = c(1,2,3,4,5,6)
+
+
+##fixed
+result_obj ='S6_fixed'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,estimateVar = FALSE),envir = parent.frame())
+
+
+##S6_RCV1-- error = 1152
+lamb = sqrt(2*log(p)/(n/2))
 method = 'RCV'
-result_obj ='n100p150_RCV8'
-assign(result_obj,COV2(n,p,rho,B,f,level,sigma,method,estimateVar = TRUE),envir = parent.frame())
+result_obj ='S6_RCV1'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
 
 
+##S6_RCV2-- no error
+lamb = 0.3
+method = 'RCV'
+result_obj ='S6_RCV2'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
+
+
+##S6_RCV3 -- no error
+lamb = 0.2
+method = 'RCV'
+result_obj ='S6_RCV3'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
+
+
+##S6_RCV4 -- no error
+lamb = 0.1
+method = 'RCV'
+result_obj ='S6_RCV4'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
+
+
+##S6_RCV5-- error=3
+lamb = 0.05
+method = 'RCV'
+result_obj ='S6_RCV5'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
+
+
+##S6_RCV6-- error=439
+lamb = 0.03
+method = 'RCV'
+result_obj ='S6_RCV6'
+assign(result_obj,COV2(n,p,beta0,rho,B,f,level,sigma,true_vars,lamb, method,estimateVar = TRUE),envir = parent.frame())
+
+summary(S6_RCV6$estimated_sigma[!(S6_RCV6$estimated_sigma=='Inf'|S6_RCV6$estimated_sigma=='NaN')])
+
+sum(S6_RCV6$estimated_sigma=='Inf'|S6_RCV6$estimated_sigma=='NaN')
+
+
+##result RCV1
+
+S6_RCV1_df = list(est = S6_RCV1, fixed = S6_fixed)
+S6_RCV1_results = generateResult(S6_RCV1_df)
+S6_RCV1_results[1]
+
+
+##result RCV5
+S6_RCV5_df = list(est = S6_RCV5, fixed = S6_fixed)
+S6_RCV5_results = generateResult(S6_RCV5_df)
+S6_RCV5_results[2]
+
+##result RCV6
+S6_RCV6_df = list(est = S6_RCV6, fixed = S6_fixed)
+S6_RCV6_results = generateResult(S6_RCV6_df)
+S6_RCV6_results[1]
+
+
+boxplot(S6_RCV1$estimated_sigma,S6_RCV2$estimated_sigma,S6_RCV3$estimated_sigma,
+        S6_RCV4$estimated_sigma,S6_RCV5$estimated_sigma,
+        names = c(0.44,0.3,0.2,0.1,0.05),xlab = "lambda",ylab = "sigmahat",main = "S6")
+abline(h = 1, col = "red", lwd = 2, lty = 1)
+abline(h = 1.1, col = "blue", lwd = 2, lty = 1)
+
+boxplot(c(S6_RCV1$F1,S6_RCV1$F2),c(S6_RCV2$F1,S6_RCV2$F2),c(S6_RCV3$F1,S6_RCV3$F2),
+        c(S6_RCV4$F1,S6_RCV4$F2),c(S6_RCV5$F1,S6_RCV5$F2),c(S6_RCV6$F1,S6_RCV6$F2),
+        names = c(0.44,0.3,0.2,0.1,0.05,0.03),xlab = "lambda",ylab = "True positive rate",main = "S6")
+
+boxplot(S6_RCV6$estimated_sigma,xlab = "lambda=0.03",ylab = "sigmahat",main = "S6")
+
+
+
+
+#mse
+
+mean((S6_RCV1$estimated_sigma-1)^2)
+mean((S6_RCV2$estimated_sigma-1)^2)
+mean((S6_RCV3$estimated_sigma-1)^2)
+mean((S6_RCV4$estimated_sigma-1)^2)
+
+
+RCV5_sigmahat = S6_RCV5$estimated_sigma[!(S6_RCV5$estimated_sigma=="NaN"|S6_RCV5$estimated_sigma=="Inf")]
+mean((RCV5_sigmahat-1)^2)
+RCV6_sigmahat = S6_RCV6$estimated_sigma[!(S6_RCV6$estimated_sigma=="NaN"|S6_RCV6$estimated_sigma=="Inf")]
+mean((RCV6_sigmahat-1)^2)
