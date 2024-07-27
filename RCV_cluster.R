@@ -176,6 +176,7 @@ COV2 = function(n,p,beta0,rho,B,f,level,sigma,true_vars=NULL,lamb=NULL,estimateV
   beta0_R = c() ## to store the absolute of the true value of the selected coefficients
   COV_R_HD = c() ## to store the coverage probability
   LENGTH_R = c()  ## to store the length of the confidence interval
+  FCR = c() ## to store the False coverage rate
   if(estimateVar){
     estimated_sigma = c() ## to store the estimator of sigma
     if(p>n){
@@ -262,6 +263,8 @@ COV2 = function(n,p,beta0,rho,B,f,level,sigma,true_vars=NULL,lamb=NULL,estimateV
       X_inf = X[ , S_R] ## X_M
       v = y - w/gamma
       beta_R_HD = solve(t(X_inf)%*%X_inf)%*%t(X_inf)%*%X%*%beta0   ## beta_M :actual partial target coefficient upon model selection
+      M = sum(S_R) ## number of selected variables
+      
       model = lm(v ~ X_inf - 1)
       
       if(estimateVar){ ## when sigma is unknown, use the estimator of the sigma
@@ -279,11 +282,15 @@ COV2 = function(n,p,beta0,rho,B,f,level,sigma,true_vars=NULL,lamb=NULL,estimateV
     if (sum(S_R) == 1){
       COV_R_HD = c(COV_R_HD, (CIs_R_HD[1] < beta_R_HD)*(CIs_R_HD[2] > beta_R_HD)) ## the proportion of beta_M lying in the CI
       LENGTH_R = c(LENGTH_R,  CIs_R_HD[2] - CIs_R_HD[1]) 
+      FCR_num = M - sum((CIs_R_HD[1] < beta_R_HD)*(CIs_R_HD[2] > beta_R_HD))
+      FCR = c(FCR, FCR_num/max(M,1))
     }
     
     if (sum(S_R) > 1){
       COV_R_HD = c(COV_R_HD, (CIs_R_HD[ , 1] < beta_R_HD)*(CIs_R_HD[ , 2] > beta_R_HD))
       LENGTH_R = c(LENGTH_R,  CIs_R_HD[ , 2] - CIs_R_HD[ , 1])
+      FCR_num = M - sum((CIs_R_HD[ , 1] < beta_R_HD)*(CIs_R_HD[ , 2] > beta_R_HD))
+      FCR = c(FCR, FCR_num/max(M,1))
     }
     
     setTxtProgressBar(pb, 100*b/B)
@@ -294,13 +301,13 @@ COV2 = function(n,p,beta0,rho,B,f,level,sigma,true_vars=NULL,lamb=NULL,estimateV
   
   if(estimateVar){
     if(p>n){
-      return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, estimated_sigma = estimated_sigma,  TPR = TPR ))
+      return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, FCR = FCR, estimated_sigma = estimated_sigma,  TPR = TPR ))
     }else{
-      return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, estimated_sigma = estimated_sigma ))
+      return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, FCR = FCR, estimated_sigma = estimated_sigma ))
     }
     
   }else{
-    return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R))
+    return(list( beta0_R=beta0_R,  COV_R_HD=COV_R_HD,  LENGTH_R=LENGTH_R, FCR = FCR))
   }
   
 }
